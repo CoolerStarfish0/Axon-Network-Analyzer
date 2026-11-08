@@ -306,7 +306,7 @@ class MainWindow(QMainWindow):
             elif "Fast" in protocol: lines.append("UDP is a lightweight way to send data without the same connection setup as TCP.")
             else: lines.append("This is network activity seen by the connection you selected.")
             if self.advanced_mode: lines.extend(["", "ADVANCED PACKET DETAILS", packet.summary(), packet.show(dump=True)])
-            self.details.setPlainText("\\n".join(lines))
+            self.details.setPlainText("\n".join(lines))
 
     def open_pcap(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open saved network recording", "", "Network recordings (*.pcap *.pcapng);;All files (*)")
