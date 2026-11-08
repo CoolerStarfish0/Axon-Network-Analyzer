@@ -8,6 +8,7 @@ A Windows desktop application for passive network traffic analysis.
 - TCP, UDP, DNS, ICMP, ARP and Ethernet protocol identification.
 - Packet metadata list, decoded summary pane and quick display filtering.
 - Open PCAP/PCAPNG files and save captured packets as PCAP.
+- Website Activity tab lists DNS hostnames observed on the selected capture interface, with timestamp and source device IP.
 - In-memory packet list capped at 10,000 entries.
 
 ## Requirements
@@ -26,6 +27,10 @@ Install Npcap separately. Live capture may require running PowerShell as Adminis
     .\run.ps1
 
 Opening existing PCAP files does not require live capture permissions. Capture filters use BPF syntax, such as tcp, udp, or port 53. Axon does not inject, modify, or transmit packets.
+
+## Website activity visibility and privacy
+
+The Website Activity tab reports DNS hostnames only when DNS queries are visible to the selected interface. It does not reveal full URLs, page contents, search terms, or encrypted HTTPS content. Encrypted DNS (DoH/DoT), VPNs, cached DNS, and some app behaviors can hide hostnames. On typical switched Wi-Fi networks, a laptop generally sees its own traffic, not every other connected device's unicast traffic. Whole-network visibility requires an authorized router/DNS logging feature or monitoring setup administered by the network owner. Use monitoring transparently and only with permission from the people and network administrator involved.
 
 ## Files
 - app.py: application entry point
