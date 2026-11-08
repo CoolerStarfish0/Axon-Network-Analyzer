@@ -4,11 +4,11 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
-    QTextEdit, QFileDialog, QMessageBox, QSplitter, QStatusBar, QHeaderView)
+    QTextEdit, QFileDialog, QMessageBox, QSplitter, QStatusBar, QHeaderView, QTabWidget)
 from scapy.all import conf, rdpcap, wrpcap
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.inet6 import IPv6
-from scapy.layers.dns import DNS
+from scapy.layers.dns import DNS, DNSQR
 from .capture import CaptureWorker
 
 STYLE = """
@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.packets = []
         self.visible_packets = []
+        self.website_events = []
         self.build_ui()
         self.load_interfaces()
 
@@ -120,7 +121,33 @@ class MainWindow(QMainWindow):
         split.addWidget(self.table)
         split.addWidget(self.details)
         split.setSizes([510, 170])
-        layout.addWidget(split, 1)
+        tabs = QTabWidget()
+        packet_tab = QWidget()
+        packet_layout = QVBoxLayout(packet_tab)
+        packet_layout.setContentsMargins(0, 8, 0, 0)
+        packet_layout.addWidget(split)
+        tabs.addTab(packet_tab, "Packet Inspector")
+
+        website_tab = QWidget()
+        website_layout = QVBoxLayout(website_tab)
+        notice = QLabel(
+            "Website Activity shows DNS hostnames observed in packets visible to this computer. "
+            "It does not show page contents or full URLs. On most Wi-Fi networks, a normal laptop "
+            "cannot see other devices' unicast traffic; whole-network coverage requires authorized "
+            "router/DNS logs or monitoring configured by the network administrator."
+        )
+        notice.setWordWrap(True)
+        notice.setObjectName("muted")
+        website_layout.addWidget(notice)
+        self.website_table = QTableWidget(0, 4)
+        self.website_table.setHorizontalHeaderLabels(["TIME", "DEVICE IP", "WEBSITE HOSTNAME", "OBSERVATION"])
+        self.website_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.website_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.website_table.verticalHeader().setVisible(False)
+        self.website_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        website_layout.addWidget(self.website_table)
+        tabs.addTab(website_tab, "Website Activity")
+        layout.addWidget(tabs, 1)
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready. Select an interface you are authorized to monitor.")
@@ -176,10 +203,44 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Capture error", message + "\n\nOn Windows, install Npcap and try running as Administrator.")
 
     def add_packet(self, packet):
+        self.record_website(packet)
         self.packets.append(packet)
         if len(self.packets) > 10000:
             self.packets.pop(0)
         self.apply_filter()
+
+    def record_website(self, packet):
+        """Record DNS query hostnames visible on this capture interface."""
+        try:
+            if DNS not in packet or DNSQR not in packet or int(packet[DNS].qr) != 0:
+                return
+            question = packet[DNS].qd
+            if not question:
+                return
+            raw_name = question.qname
+            if isinstance(raw_name, bytes):
+                hostname = raw_name.decode("idna", errors="ignore").rstrip(".")
+            else:
+                hostname = str(raw_name).rstrip(".")
+            if not hostname or " " in hostname:
+                return
+            device_ip = "Unknown"
+            if IP in packet:
+                device_ip = packet[IP].src
+            elif IPv6 in packet:
+                device_ip = packet[IPv6].src
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            event = (timestamp, device_ip, hostname, "DNS hostname query")
+            self.website_events.append(event)
+            if len(self.website_events) > 1000:
+                self.website_events.pop(0)
+            row = self.website_table.rowCount()
+            self.website_table.insertRow(row)
+            for col, value in enumerate(event):
+                self.website_table.setItem(row, col, QTableWidgetItem(value))
+            self.website_table.scrollToBottom()
+        except Exception:
+            return
 
     def apply_filter(self):
         query = self.search.text().strip().lower()
@@ -230,6 +291,8 @@ class MainWindow(QMainWindow):
     def clear_packets(self):
         self.packets.clear()
         self.visible_packets.clear()
+        self.website_events.clear()
+        self.website_table.setRowCount(0)
         self.table.setRowCount(0)
         self.details.clear()
         self.count.setText("0 packets")
