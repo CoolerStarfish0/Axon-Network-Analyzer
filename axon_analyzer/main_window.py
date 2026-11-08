@@ -4,7 +4,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
-    QTextEdit, QFileDialog, QMessageBox, QSplitter, QStatusBar, QHeaderView, QTabWidget)
+    QTextEdit, QFileDialog, QMessageBox, QSplitter, QStatusBar, QHeaderView, QTabWidget, QGroupBox)
 from scapy.all import conf, rdpcap, wrpcap
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.inet6 import IPv6
@@ -298,7 +298,15 @@ class MainWindow(QMainWindow):
         selected = self.table.selectionModel().selectedRows()
         if selected and selected[0].row() < len(self.visible_packets):
             packet = self.visible_packets[selected[0].row()]
-            self.details.setPlainText(packet.summary() + "\n\n" + packet.show(dump=True))
+            info = packet_info(packet)
+            protocol = info[3]
+            lines = ["WHAT THIS MEANS", f"Axon noticed network activity at {info[0]}.", f"From: {info[1]}", f"To: {info[2]}", f"Connection type: {protocol}", f"Data size: {info[6]} bytes", "", "SIMPLE EXPLANATION"]
+            if protocol == "Website lookup": lines.append("Your computer is asking a website-lookup service to find a website's network address.")
+            elif "Reliable" in protocol: lines.append("TCP is designed to deliver data reliably and in order.")
+            elif "Fast" in protocol: lines.append("UDP is a lightweight way to send data without the same connection setup as TCP.")
+            else: lines.append("This is network activity seen by the connection you selected.")
+            if self.advanced_mode: lines.extend(["", "ADVANCED PACKET DETAILS", packet.summary(), packet.show(dump=True)])
+            self.details.setPlainText("\\n".join(lines))
 
     def open_pcap(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open saved network recording", "", "Network recordings (*.pcap *.pcapng);;All files (*)")
