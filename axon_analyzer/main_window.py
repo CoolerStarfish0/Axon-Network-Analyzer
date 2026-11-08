@@ -1,5 +1,6 @@
 """Axon Network Analyzer main window."""
 import os
+import ipaddress
 from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -352,15 +353,23 @@ class MainWindow(QMainWindow):
                 item = found.setdefault(address, {"count": 0, "last": seen_at})
                 item["count"] += 1
                 item["last"] = seen_at
-        self.ip_table.setRowCount(0)
         local_text = self.local_ip_label.text()
         local_ip = local_text.rsplit(" ", 1)[-1] if ":" in local_text else ""
+        try:
+            if ipaddress.ip_address(local_ip).version in (4, 6):
+                found.setdefault(local_ip, {"count": 0, "last": "—"})
+        except ValueError:
+            local_ip = ""
+        self.ip_table.setRowCount(0)
         for address, data in sorted(found.items(), key=lambda item: item[0]):
             if query and query not in address.lower():
                 continue
             row = self.ip_table.rowCount()
             self.ip_table.insertRow(row)
-            kind = "This computer" if address == local_ip else ("Private network" if address.startswith(("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31.")) else "Public address")
+            try:
+                kind = "This computer" if address == local_ip else ("Private network" if ipaddress.ip_address(address).is_private else "Public address")
+            except ValueError:
+                kind = "Address"
             values = (address, str(data["count"]), data["last"], kind)
             for col, value in enumerate(values):
                 self.ip_table.setItem(row, col, QTableWidgetItem(value))
