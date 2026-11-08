@@ -3,9 +3,9 @@ import os
 from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
+    QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem, QApplication,
     QTextEdit, QFileDialog, QMessageBox, QSplitter, QStatusBar, QHeaderView, QTabWidget, QGroupBox)
-from scapy.all import conf, rdpcap, wrpcap
+from scapy.all import conf, rdpcap, wrpcap, get_if_addr
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.inet6 import IPv6
 from scapy.layers.dns import DNS, DNSQR
@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.packets = []
         self.visible_packets = []
         self.website_events = []
+        self.ip_search_text = ""
         self.advanced_mode = False
         self.build_ui()
         self.load_interfaces()
@@ -144,6 +145,38 @@ class MainWindow(QMainWindow):
         packet_layout.addWidget(split)
         tabs.addTab(packet_tab, "Network Activity")
 
+        ip_tab = QWidget()
+        ip_layout = QVBoxLayout(ip_tab)
+        ip_intro = QLabel(
+            "Find IP addresses Axon can legitimately see on this computer's selected connection. "
+            "This includes your computer's local address and addresses observed in captured traffic. "
+            "It is not a list of every device on your Wi-Fi."
+        )
+        ip_intro.setWordWrap(True)
+        ip_intro.setObjectName("muted")
+        ip_layout.addWidget(ip_intro)
+        self.local_ip_label = QLabel("Your computer's local IP: Select a connection")
+        self.local_ip_label.setStyleSheet("font-size:14pt;font-weight:700;color:#d6ad55;padding:8px;")
+        ip_layout.addWidget(self.local_ip_label)
+        ip_tools = QHBoxLayout()
+        self.ip_search = QLineEdit()
+        self.ip_search.setPlaceholderText("Search observed IP addresses…")
+        self.copy_ip_btn = QPushButton("Copy selected IP")
+        self.refresh_ip_btn = QPushButton("Refresh IP list")
+        ip_tools.addWidget(self.ip_search, 1)
+        ip_tools.addWidget(self.copy_ip_btn)
+        ip_tools.addWidget(self.refresh_ip_btn)
+        ip_layout.addLayout(ip_tools)
+        self.ip_table = QTableWidget(0, 4)
+        self.ip_table.setHorizontalHeaderLabels(["IP ADDRESS", "TRAFFIC SEEN", "LAST OBSERVED", "TYPE"])
+        self.ip_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.ip_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.ip_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.ip_table.verticalHeader().setVisible(False)
+        self.ip_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        ip_layout.addWidget(self.ip_table, 1)
+        tabs.addTab(ip_tab, "IP Finder")
+
         website_tab = QWidget()
         website_layout = QVBoxLayout(website_tab)
         notice = QLabel(
@@ -175,6 +208,10 @@ class MainWindow(QMainWindow):
         clear_btn.clicked.connect(self.clear_packets)
         self.search.textChanged.connect(self.apply_filter)
         self.table.itemSelectionChanged.connect(self.show_details)
+        self.ip_search.textChanged.connect(self.refresh_ip_finder)
+        self.refresh_ip_btn.clicked.connect(self.refresh_ip_finder)
+        self.copy_ip_btn.clicked.connect(self.copy_selected_ip)
+        self.interface_box.currentIndexChanged.connect(self.update_local_ip)
 
     def toggle_advanced(self, enabled):
         self.advanced_mode = enabled
@@ -207,6 +244,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Connection error", str(exc))
         if not self.interface_box.count(): self.statusBar().showMessage("No network connections found. Install Npcap for live monitoring.")
+        self.update_local_ip()
+        self.refresh_ip_finder()
 
     def start_capture(self):
         iface = self.interface_box.currentData()
@@ -245,6 +284,8 @@ class MainWindow(QMainWindow):
         if len(self.packets) > 10000:
             self.packets.pop(0)
         self.apply_filter()
+        if len(self.packets) % 10 == 0:
+            self.refresh_ip_finder()
 
     def record_website(self, packet):
         """Record DNS query hostnames visible on this capture interface."""
@@ -278,6 +319,62 @@ class MainWindow(QMainWindow):
             self.website_table.scrollToBottom()
         except Exception:
             return
+
+    def update_local_ip(self, *_):
+        iface = self.interface_box.currentData()
+        if not iface:
+            self.local_ip_label.setText("Your computer's local IP: Not available")
+            return
+        try:
+            address = get_if_addr(iface)
+            if not address or address == "0.0.0.0":
+                address = "Not available on this connection"
+            self.local_ip_label.setText(f"Your computer's local IP: {address}")
+        except Exception:
+            self.local_ip_label.setText("Your computer's local IP: Not available")
+
+    def refresh_ip_finder(self, *_):
+        query = self.ip_search.text().strip().lower()
+        found = {}
+        for packet in self.packets:
+            addresses = []
+            if IP in packet:
+                addresses.extend((packet[IP].src, packet[IP].dst))
+            elif IPv6 in packet:
+                addresses.extend((packet[IPv6].src, packet[IPv6].dst))
+            try:
+                seen_at = datetime.fromtimestamp(float(packet.time)).strftime("%H:%M:%S")
+            except Exception:
+                seen_at = "Unknown"
+            for address in addresses:
+                if not address or address in ("0.0.0.0", "::"):
+                    continue
+                item = found.setdefault(address, {"count": 0, "last": seen_at})
+                item["count"] += 1
+                item["last"] = seen_at
+        self.ip_table.setRowCount(0)
+        local_text = self.local_ip_label.text()
+        local_ip = local_text.rsplit(" ", 1)[-1] if ":" in local_text else ""
+        for address, data in sorted(found.items(), key=lambda item: item[0]):
+            if query and query not in address.lower():
+                continue
+            row = self.ip_table.rowCount()
+            self.ip_table.insertRow(row)
+            kind = "This computer" if address == local_ip else ("Private network" if address.startswith(("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31.")) else "Public address")
+            values = (address, str(data["count"]), data["last"], kind)
+            for col, value in enumerate(values):
+                self.ip_table.setItem(row, col, QTableWidgetItem(value))
+        self.ip_table.resizeRowsToContents()
+
+    def copy_selected_ip(self):
+        selected = self.ip_table.selectionModel().selectedRows()
+        if not selected:
+            self.statusBar().showMessage("Select an IP address first.")
+            return
+        item = self.ip_table.item(selected[0].row(), 0)
+        if item:
+            QApplication.clipboard().setText(item.text())
+            self.statusBar().showMessage("IP address copied.")
 
     def apply_filter(self):
         query = self.search.text().strip().lower()
@@ -317,6 +414,7 @@ class MainWindow(QMainWindow):
             self.packets.extend(list(loaded))
             self.packets = self.packets[-10000:]
             self.apply_filter()
+            self.refresh_ip_finder()
             self.statusBar().showMessage(f"Loaded {len(loaded)} packets from {os.path.basename(path)}")
         except Exception as exc:
             QMessageBox.critical(self, "PCAP error", str(exc))
@@ -338,6 +436,7 @@ class MainWindow(QMainWindow):
         self.visible_packets.clear()
         self.website_events.clear()
         self.website_table.setRowCount(0)
+        self.refresh_ip_finder()
         self.table.setRowCount(0)
         self.details.clear()
         self.count.setText("0 packets")
