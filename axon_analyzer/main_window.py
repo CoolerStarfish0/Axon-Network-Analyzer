@@ -45,7 +45,8 @@ def packet_info(packet):
         proto = "ETHERNET"
     if DNS in packet:
         proto = "DNS"
-    return [stamp, src, dst, proto, sport, dport, str(len(packet))]
+    friendly = {"TCP": "Reliable (TCP)", "UDP": "Fast (UDP)", "DNS": "Website lookup", "ICMP": "Network message", "ARP": "Device discovery", "ETHERNET": "Local network"}
+    return [stamp, src, dst, friendly.get(proto, proto), sport, dport, str(len(packet))]
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         self.packets = []
         self.visible_packets = []
         self.website_events = []
+        self.advanced_mode = False
         self.build_ui()
         self.load_interfaces()
 
@@ -67,7 +69,7 @@ class MainWindow(QMainWindow):
         brand_col = QVBoxLayout()
         brand = QLabel("AXON")
         brand.setObjectName("brand")
-        sub = QLabel("NETWORK ANALYZER  /  PASSIVE TRAFFIC INSPECTION")
+        sub = QLabel("A FRIENDLIER WAY TO UNDERSTAND YOUR NETWORK")
         sub.setObjectName("muted")
         brand_col.addWidget(brand)
         brand_col.addWidget(sub)
@@ -80,27 +82,41 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         self.interface_box = QComboBox()
-        self.interface_box.setMinimumWidth(270)
-        self.capture_filter = QLineEdit()
-        self.capture_filter.setPlaceholderText("BPF capture filter: tcp, udp, port 53…")
-        self.start_btn = QPushButton("Start capture")
+        self.interface_box.setMinimumWidth(230)
+        self.interface_box.setToolTip("Choose the internet connection you want Axon to monitor.")
+        controls.addWidget(QLabel("Your connection"))
+        controls.addWidget(self.interface_box, 2)
+        self.start_btn = QPushButton("Start monitoring")
         self.start_btn.setObjectName("primary")
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setEnabled(False)
-        refresh_btn = QPushButton("Refresh")
-        controls.addWidget(QLabel("INTERFACE"))
-        controls.addWidget(self.interface_box, 2)
-        controls.addWidget(self.capture_filter, 3)
+        refresh_btn = QPushButton("Refresh connections")
+        self.advanced_toggle = QPushButton("Advanced settings  ▾")
+        self.advanced_toggle.setCheckable(True)
         controls.addWidget(self.start_btn)
         controls.addWidget(self.stop_btn)
         controls.addWidget(refresh_btn)
+        controls.addWidget(self.advanced_toggle)
         layout.addLayout(controls)
+        self.capture_filter = QLineEdit()
+        self.capture_filter.setPlaceholderText("Traffic filter (BPF), e.g. tcp, udp, or port 53")
+        self.capture_filter.setToolTip("BPF is an advanced language for filtering network traffic.")
+        self.advanced_panel = QGroupBox("Advanced network settings")
+        advanced_layout = QVBoxLayout(self.advanced_panel)
+        advanced_layout.addWidget(QLabel("Optional traffic filter"))
+        advanced_layout.addWidget(self.capture_filter)
+        note = QLabel("TCP = reliable connection  •  UDP = lightweight data transfer  •  Port 53 = commonly used for website lookups (DNS).")
+        note.setWordWrap(True)
+        advanced_layout.addWidget(note)
+        self.advanced_panel.hide()
+        layout.addWidget(self.advanced_panel)
+        self.advanced_toggle.toggled.connect(self.toggle_advanced)
 
         actions = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filter visible packets by IP, protocol or port…")
         self.count = QLabel("0 packets")
-        open_btn, save_btn, clear_btn = QPushButton("Open PCAP"), QPushButton("Save PCAP"), QPushButton("Clear")
+        open_btn, save_btn, clear_btn = QPushButton("Open saved recording"), QPushButton("Save recording"), QPushButton("Clear list")
         actions.addWidget(self.search, 1)
         actions.addWidget(self.count)
         actions.addWidget(open_btn)
@@ -110,14 +126,14 @@ class MainWindow(QMainWindow):
 
         split = QSplitter(Qt.Vertical)
         self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["TIME", "SOURCE", "DESTINATION", "PROTOCOL", "SRC PORT", "DST PORT", "BYTES"])
+        self.table.setHorizontalHeaderLabels(["TIME", "FROM", "TO", "CONNECTION TYPE", "FROM PORT", "TO PORT", "DATA (BYTES)"])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
-        self.details.setPlaceholderText("Select a packet to inspect its decoded summary.")
+        self.details.setPlaceholderText("Select a row to see what your computer is communicating with.")
         split.addWidget(self.table)
         split.addWidget(self.details)
         split.setSizes([510, 170])
@@ -126,7 +142,7 @@ class MainWindow(QMainWindow):
         packet_layout = QVBoxLayout(packet_tab)
         packet_layout.setContentsMargins(0, 8, 0, 0)
         packet_layout.addWidget(split)
-        tabs.addTab(packet_tab, "Packet Inspector")
+        tabs.addTab(packet_tab, "Network Activity")
 
         website_tab = QWidget()
         website_layout = QVBoxLayout(website_tab)
@@ -146,11 +162,11 @@ class MainWindow(QMainWindow):
         self.website_table.verticalHeader().setVisible(False)
         self.website_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         website_layout.addWidget(self.website_table)
-        tabs.addTab(website_tab, "Website Activity")
+        tabs.addTab(website_tab, "Website Lookups")
         layout.addWidget(tabs, 1)
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Ready. Select an interface you are authorized to monitor.")
+        self.statusBar().showMessage("Ready. Choose Wi-Fi or a wired connection, then select Start monitoring.")
         self.start_btn.clicked.connect(self.start_capture)
         self.stop_btn.clicked.connect(self.stop_capture)
         refresh_btn.clicked.connect(self.load_interfaces)
@@ -160,16 +176,37 @@ class MainWindow(QMainWindow):
         self.search.textChanged.connect(self.apply_filter)
         self.table.itemSelectionChanged.connect(self.show_details)
 
+    def toggle_advanced(self, enabled):
+        self.advanced_mode = enabled
+        self.advanced_panel.setVisible(enabled)
+        self.advanced_toggle.setText("Advanced settings  ▴" if enabled else "Advanced settings  ▾")
+
+    def friendly_interface_name(self, name, description):
+        value = (name + " " + description).lower()
+        if any(x in value for x in ("wi-fi", "wifi", "wireless", "802.11")): return "Wi-Fi"
+        if "ethernet" in value or "gigabit" in value: return "Wired connection (Ethernet)"
+        if "loopback" in value: return "This computer only (not internet)"
+        if any(x in value for x in ("virtual", "hyper-v", "vmware", "vethernet")): return "Virtual connection (advanced)"
+        return "Other network connection"
+
     def load_interfaces(self):
+        previous = self.interface_box.currentData()
         self.interface_box.clear()
         try:
+            choices = []
             for name, iface in conf.ifaces.items():
                 desc = getattr(iface, "description", "") or ""
-                self.interface_box.addItem(f"{name} — {desc}" if desc else name, name)
+                friendly = self.friendly_interface_name(str(name), str(desc))
+                label = friendly if friendly in ("Wi-Fi", "Wired connection (Ethernet)", "This computer only (not internet)") else f"{friendly} ({desc or name})"
+                choices.append((label, name, friendly))
+            choices.sort(key=lambda x: (0 if x[2] in ("Wi-Fi", "Wired connection (Ethernet)") else 2 if "Virtual" in x[2] or "only" in x[2] else 1, x[0]))
+            for label, name, _ in choices: self.interface_box.addItem(label, name)
+            if previous:
+                index = self.interface_box.findData(previous)
+                if index >= 0: self.interface_box.setCurrentIndex(index)
         except Exception as exc:
-            QMessageBox.warning(self, "Interface error", str(exc))
-        if not self.interface_box.count():
-            self.statusBar().showMessage("No interfaces found. Install Npcap for Windows capture support.")
+            QMessageBox.warning(self, "Connection error", str(exc))
+        if not self.interface_box.count(): self.statusBar().showMessage("No network connections found. Install Npcap for live monitoring.")
 
     def start_capture(self):
         iface = self.interface_box.currentData()
@@ -186,7 +223,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.live_label.setText("● CAPTURING")
-        self.statusBar().showMessage("Passive capture running on " + str(iface))
+        self.statusBar().showMessage("Axon is monitoring " + self.interface_box.currentText() + ".")
 
     def stop_capture(self):
         if self.worker and self.worker.isRunning():
@@ -264,7 +301,7 @@ class MainWindow(QMainWindow):
             self.details.setPlainText(packet.summary() + "\n\n" + packet.show(dump=True))
 
     def open_pcap(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open capture", "", "Capture files (*.pcap *.pcapng);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open saved network recording", "", "Network recordings (*.pcap *.pcapng);;All files (*)")
         if not path:
             return
         try:
@@ -280,7 +317,7 @@ class MainWindow(QMainWindow):
         if not self.packets:
             QMessageBox.information(self, "Nothing to save", "Capture or open packets first.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save capture", "axon-capture.pcap", "PCAP files (*.pcap)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save network recording", "axon-recording.pcap", "Network recording (*.pcap)")
         if path:
             try:
                 wrpcap(path, self.packets)
