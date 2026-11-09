@@ -1,6 +1,8 @@
 """Axon Network Analyzer main window."""
 import os
 import ipaddress
+import re
+import subprocess
 from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -60,6 +62,7 @@ class MainWindow(QMainWindow):
         self.website_events = []
         self.ip_search_text = ""
         self.advanced_mode = False
+        self.wifi_networks = []
         self.build_ui()
         self.load_interfaces()
 
@@ -178,6 +181,38 @@ class MainWindow(QMainWindow):
         ip_layout.addWidget(self.ip_table, 1)
         tabs.addTab(ip_tab, "IP Finder")
 
+        wifi_tab = QWidget()
+        wifi_layout = QVBoxLayout(wifi_tab)
+        wifi_intro = QLabel(
+            "Scan nearby Wi-Fi broadcasts and compare network names, router radio IDs (BSSIDs), "
+            "signal, channel and security. A nearby scan cannot reveal a router's IP. Axon only "
+            "shows IP details for the Wi-Fi network this computer is currently connected to."
+        )
+        wifi_intro.setWordWrap(True)
+        wifi_intro.setObjectName("muted")
+        wifi_layout.addWidget(wifi_intro)
+        wifi_controls = QHBoxLayout()
+        self.wifi_search = QLineEdit()
+        self.wifi_search.setPlaceholderText("Filter by Wi-Fi name or BSSID…")
+        self.wifi_scan_btn = QPushButton("Scan nearby Wi-Fi")
+        self.wifi_scan_btn.setObjectName("primary")
+        wifi_controls.addWidget(self.wifi_search, 1)
+        wifi_controls.addWidget(self.wifi_scan_btn)
+        wifi_layout.addLayout(wifi_controls)
+        self.wifi_connection_label = QLabel("Connected Wi-Fi IP details: not checked yet")
+        self.wifi_connection_label.setWordWrap(True)
+        self.wifi_connection_label.setStyleSheet("font-size:12pt;font-weight:700;color:#d6ad55;padding:8px;")
+        wifi_layout.addWidget(self.wifi_connection_label)
+        self.wifi_table = QTableWidget(0, 6)
+        self.wifi_table.setHorizontalHeaderLabels(["WI-FI NAME", "ROUTER RADIO ID (BSSID)", "SIGNAL", "CHANNEL", "SECURITY", "IP INFORMATION"])
+        self.wifi_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.wifi_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.wifi_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.wifi_table.verticalHeader().setVisible(False)
+        self.wifi_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        wifi_layout.addWidget(self.wifi_table, 1)
+        tabs.addTab(wifi_tab, "Wi-Fi Radar")
+
         website_tab = QWidget()
         website_layout = QVBoxLayout(website_tab)
         notice = QLabel(
@@ -213,6 +248,157 @@ class MainWindow(QMainWindow):
         self.refresh_ip_btn.clicked.connect(self.refresh_ip_finder)
         self.copy_ip_btn.clicked.connect(self.copy_selected_ip)
         self.interface_box.currentIndexChanged.connect(self.update_local_ip)
+        self.wifi_scan_btn.clicked.connect(self.scan_wifi_networks)
+        self.wifi_search.textChanged.connect(self.filter_wifi_networks)
+        self.wifi_table.itemSelectionChanged.connect(self.show_wifi_selection)
+
+    def scan_wifi_networks(self):
+        """Read nearby Wi-Fi broadcasts using Windows' built-in, read-only netsh scan."""
+        self.wifi_scan_btn.setEnabled(False)
+        self.wifi_scan_btn.setText("Scanning…")
+        QApplication.processEvents()
+        try:
+            result = subprocess.run(
+                ["netsh", "wlan", "show", "networks", "mode=bssid"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "Windows could not scan Wi-Fi networks.").strip()
+                self.statusBar().showMessage(detail[:220])
+                self.wifi_connection_label.setText("Wi-Fi scan unavailable. Check that Wi-Fi is enabled and the Windows WLAN service is running.")
+                return
+            connected_ssid, connected_bssid = self.get_connected_wifi()
+            gateway = self.get_default_gateway()
+            local_ip = ""
+            try:
+                local_ip = get_if_addr(self.interface_box.currentData()) if self.interface_box.currentData() else ""
+                if local_ip == "0.0.0.0":
+                    local_ip = ""
+            except Exception:
+                local_ip = ""
+            if connected_ssid:
+                self.wifi_connection_label.setText(
+                    f"Currently connected: {connected_ssid}  •  Your computer's IP: {local_ip or 'Unavailable'}  •  "
+                    f"Router / gateway IP: {gateway or 'Unavailable'}"
+                )
+            else:
+                self.wifi_connection_label.setText(
+                    f"Not connected to Wi-Fi  •  Your computer's IP: {local_ip or 'Unavailable'}  •  "
+                    f"Router / gateway IP: {gateway or 'Unavailable'}"
+                )
+
+            networks = []
+            current = None
+            for raw_line in result.stdout.splitlines():
+                line = raw_line.strip()
+                ssid_match = re.match(r"SSID\s+\d+\s*:\s*(.*)$", line, re.I)
+                if ssid_match:
+                    current = {"ssid": ssid_match.group(1).strip() or "(Hidden network)", "bssid": "—",
+                               "signal": "—", "channel": "—", "security": "Unknown"}
+                    networks.append(current)
+                    continue
+                if current is None:
+                    continue
+                bssid_match = re.match(r"BSSID\s+\d+\s*:\s*(.*)$", line, re.I)
+                if bssid_match:
+                    current["bssid"] = bssid_match.group(1).strip()
+                    continue
+                for key, pattern in (
+                    ("signal", r"Signal\s*:\s*(.*)$"),
+                    ("channel", r"Channel\s*:\s*(.*)$"),
+                    ("security", r"Authentication\s*:\s*(.*)$"),
+                ):
+                    match = re.match(pattern, line, re.I)
+                    if match:
+                        current[key] = match.group(1).strip()
+                if re.match(r"Encryption\s*:", line, re.I):
+                    encryption = line.split(":", 1)[-1].strip()
+                    current["security"] = current["security"] + " / " + encryption
+
+            self.wifi_networks = networks
+            self.filter_wifi_networks()
+            self.statusBar().showMessage(f"Found {len(networks)} nearby Wi-Fi radio entries. IP details are only available for the connected network.")
+        except FileNotFoundError:
+            self.wifi_connection_label.setText("Wi-Fi scanning is supported on Windows using the built-in netsh command.")
+        except subprocess.TimeoutExpired:
+            self.wifi_connection_label.setText("The Wi-Fi scan timed out. Try again.")
+        except Exception as exc:
+            self.wifi_connection_label.setText(f"Wi-Fi scan failed: {exc}")
+        finally:
+            self.wifi_scan_btn.setEnabled(True)
+            self.wifi_scan_btn.setText("Scan nearby Wi-Fi")
+
+    def get_connected_wifi(self):
+        try:
+            result = subprocess.run(
+                ["netsh", "wlan", "show", "interfaces"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8
+            )
+            ssid = ""
+            bssid = ""
+            for line in result.stdout.splitlines():
+                match = re.match(r"\s*SSID\s*:\s*(.*)$", line, re.I)
+                if match and not line.strip().lower().startswith("bssid"):
+                    ssid = match.group(1).strip()
+                match = re.match(r"\s*BSSID\s*:\s*(.*)$", line, re.I)
+                if match:
+                    bssid = match.group(1).strip()
+            return ssid, bssid
+        except Exception:
+            return "", ""
+
+    def get_default_gateway(self):
+        try:
+            result = subprocess.run(
+                ["route", "print", "-4"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=8
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                    try:
+                        return str(ipaddress.ip_address(parts[2]))
+                    except ValueError:
+                        continue
+        except Exception:
+            pass
+        return ""
+
+    def filter_wifi_networks(self, *_):
+        query = self.wifi_search.text().strip().lower()
+        networks = getattr(self, "wifi_networks", [])
+        connected_ssid, connected_bssid = self.get_connected_wifi()
+        gateway = self.get_default_gateway() if connected_ssid else ""
+        self.wifi_table.setRowCount(0)
+        for network in networks:
+            searchable = (network["ssid"] + " " + network["bssid"]).lower()
+            if query and query not in searchable:
+                continue
+            is_connected = bool(connected_ssid and (
+                network["ssid"] == connected_ssid or
+                (connected_bssid and network["bssid"].lower() == connected_bssid.lower())
+            ))
+            ip_info = f"Gateway: {gateway or 'Unavailable'}" if is_connected else "Not exposed by nearby scan"
+            values = (network["ssid"], network["bssid"], network["signal"],
+                      network["channel"], network["security"], ip_info)
+            row = self.wifi_table.rowCount()
+            self.wifi_table.insertRow(row)
+            for col, value in enumerate(values):
+                self.wifi_table.setItem(row, col, QTableWidgetItem(value))
+        self.wifi_table.resizeRowsToContents()
+
+    def show_wifi_selection(self):
+        selected = self.wifi_table.selectionModel().selectedRows()
+        if not selected:
+            return
+        names = []
+        for index in selected:
+            item = self.wifi_table.item(index.row(), 0)
+            if item and item.text() not in names:
+                names.append(item.text())
+        if names:
+            suffix = " (multiple networks selected)" if len(names) > 1 else ""
+            self.statusBar().showMessage("Selected: " + ", ".join(names[:5]) + suffix)
 
     def toggle_advanced(self, enabled):
         self.advanced_mode = enabled
