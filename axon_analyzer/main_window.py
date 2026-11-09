@@ -268,24 +268,14 @@ class MainWindow(QMainWindow):
                 self.wifi_connection_label.setText("Wi-Fi scan unavailable. Check that Wi-Fi is enabled and the Windows WLAN service is running.")
                 return
             connected_ssid, connected_bssid = self.get_connected_wifi()
-            gateway = self.get_default_gateway()
-            local_ip = ""
-            try:
-                local_ip = get_if_addr(self.interface_box.currentData()) if self.interface_box.currentData() else ""
-                if local_ip == "0.0.0.0":
-                    local_ip = ""
-            except Exception:
-                local_ip = ""
+            wifi_ip, gateway = self.get_wifi_ip_details()
             if connected_ssid:
                 self.wifi_connection_label.setText(
-                    f"Currently connected: {connected_ssid}  •  Your computer's IP: {local_ip or 'Unavailable'}  •  "
+                    f"Currently connected: {connected_ssid}  •  Your computer's Wi-Fi IP: {wifi_ip or 'Unavailable'}  •  "
                     f"Router / gateway IP: {gateway or 'Unavailable'}"
                 )
             else:
-                self.wifi_connection_label.setText(
-                    f"Not connected to Wi-Fi  •  Your computer's IP: {local_ip or 'Unavailable'}  •  "
-                    f"Router / gateway IP: {gateway or 'Unavailable'}"
-                )
+                self.wifi_connection_label.setText("Not connected to a Wi-Fi network. Nearby networks do not expose their IP addresses through a broadcast scan.")
 
             networks = []
             current = None
@@ -347,28 +337,60 @@ class MainWindow(QMainWindow):
         except Exception:
             return "", ""
 
-    def get_default_gateway(self):
+    def get_wifi_ip_details(self):
+        """Read only the currently connected Wi-Fi adapter's IP configuration."""
         try:
-            result = subprocess.run(
-                ["route", "print", "-4"], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=8
+            interface_result = subprocess.run(
+                ["netsh", "wlan", "show", "interfaces"], capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=8
             )
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 4 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+            adapter_name = ""
+            for line in interface_result.stdout.splitlines():
+                match = re.match(r"\\s*Name\\s*:\\s*(.*)$", line, re.I)
+                if match:
+                    adapter_name = match.group(1).strip()
+                    break
+            if not adapter_name:
+                return "", ""
+            config = subprocess.run(
+                ["ipconfig", "/all"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=8
+            ).stdout
+            lines = config.splitlines()
+            section = []
+            collecting = False
+            for line in lines:
+                if re.search(r"adapter\\s+.*" + re.escape(adapter_name) + r"\\s*:", line, re.I):
+                    collecting = True
+                    section = []
+                    continue
+                if collecting and re.search(r"adapter\\s+.*:", line, re.I):
+                    break
+                if collecting:
+                    section.append(line)
+            wifi_ip = gateway = ""
+            for line in section:
+                if re.search(r"IPv4 Address", line, re.I):
+                    value = line.split(":", 1)[-1].strip().split("(")[0].strip()
                     try:
-                        return str(ipaddress.ip_address(parts[2]))
+                        wifi_ip = str(ipaddress.ip_address(value))
                     except ValueError:
-                        continue
+                        pass
+                elif re.search(r"Default Gateway", line, re.I):
+                    value = line.split(":", 1)[-1].strip()
+                    try:
+                        gateway = str(ipaddress.ip_address(value))
+                    except ValueError:
+                        pass
+            return wifi_ip, gateway
         except Exception:
-            pass
-        return ""
+            return "", ""
 
     def filter_wifi_networks(self, *_):
         query = self.wifi_search.text().strip().lower()
         networks = getattr(self, "wifi_networks", [])
         connected_ssid, connected_bssid = self.get_connected_wifi()
-        gateway = self.get_default_gateway() if connected_ssid else ""
+        _, gateway = self.get_wifi_ip_details() if connected_ssid else ("", "")
         self.wifi_table.setRowCount(0)
         for network in networks:
             searchable = (network["ssid"] + " " + network["bssid"]).lower()
