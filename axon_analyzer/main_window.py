@@ -291,6 +291,10 @@ class MainWindow(QMainWindow):
                     continue
                 bssid_match = re.match(r"BSSID\s+\d+\s*:\s*(.*)$", line, re.I)
                 if bssid_match:
+                    if current["bssid"] != "—":
+                        current = {"ssid": current["ssid"], "bssid": "—", "signal": "—",
+                                   "channel": "—", "security": current["security"]}
+                        networks.append(current)
                     current["bssid"] = bssid_match.group(1).strip()
                     continue
                 for key, pattern in (
@@ -346,7 +350,7 @@ class MainWindow(QMainWindow):
             )
             adapter_name = ""
             for line in interface_result.stdout.splitlines():
-                match = re.match(r"\\s*Name\\s*:\\s*(.*)$", line, re.I)
+                match = re.match(r"\s*Name\s*:\s*(.*)$", line, re.I)
                 if match:
                     adapter_name = match.group(1).strip()
                     break
@@ -360,11 +364,11 @@ class MainWindow(QMainWindow):
             section = []
             collecting = False
             for line in lines:
-                if re.search(r"adapter\\s+.*" + re.escape(adapter_name) + r"\\s*:", line, re.I):
+                if re.search(r"adapter\s+.*" + re.escape(adapter_name) + r"\s*:", line, re.I):
                     collecting = True
                     section = []
                     continue
-                if collecting and re.search(r"adapter\\s+.*:", line, re.I):
+                if collecting and re.search(r"adapter\s+.*:", line, re.I):
                     break
                 if collecting:
                     section.append(line)
